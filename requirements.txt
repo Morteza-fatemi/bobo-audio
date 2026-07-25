@@ -1,0 +1,12 @@
+vosk==0.3.45
+sounddevice==0.4.6
+numpy>=1.24
+pillow>=10.0
+openwakeword==0.6.0
+onnxruntime>=1.16
+pycaw==20240210
+comtypes>=1.2.0
+psutil>=5.9
+screen-brightness-control>=0.22
+mss>=9.0
+winsdk>=1.0.0b10

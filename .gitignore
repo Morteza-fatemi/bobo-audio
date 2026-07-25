@@ -1,0 +1,16 @@
+# Local secrets and runtime state
+web_password.txt
+.bobo_session_key
+*.log
+*.txt
+model/
+models/
+dist/
+build/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+!.env.example

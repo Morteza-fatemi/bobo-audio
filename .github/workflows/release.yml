@@ -1,0 +1,38 @@
+name: Source Release
+on:
+  workflow_run:
+    workflows: ["Quality"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: publish-source-v0.1.0
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_repository.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Publish only once after successful main CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v0.1.0 >/dev/null 2>&1; then
+            echo "v0.1.0 already exists; leaving published release unchanged"
+            exit 0
+          fi
+          gh release create v0.1.0 --target "$TARGET_SHA" \
+            --title "BOBO v0.1.0 - Windows source preview" \
+            --notes-file RELEASE_NOTES.md \
+            --latest=false

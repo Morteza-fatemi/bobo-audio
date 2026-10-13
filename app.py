@@ -92,20 +92,19 @@ DUCK_LEVEL = 15                 # volume (0..100 %) while listening for a comman
 
 # --- Wi-Fi web remote ------------------------------------------------------
 WEB_PORT = 49731                # deliberately odd/high port
-WEB_BIND = "0.0.0.0"            # "0.0.0.0" = reachable over Wi-Fi.
-                                # Use "127.0.0.1" to allow this PC only.
+# Remote disabled unless a strong password is configured.
+WEB_BIND = "127.0.0.1"          # Use "0.0.0.0" only for trusted-LAN remote access.
 # --- Web remote password ---------------------------------------------------
 # Leave WEB_PASSWORD empty and put the password in a file named
 # "web_password.txt" next to app.py (recommended — keeps it out of the source).
-# If both are empty, the remote is OPEN to anyone on the network.
-# After logging in once, the browser is remembered for WEB_SESSION_DAYS.
+# No password (or a password shorter than 12 characters) = remote DISABLED.
+# Voice controls continue to work locally without the web server.
 WEB_PASSWORD = ""
-WEB_SESSION_DAYS = 30
+WEB_SESSION_DAYS = 1
 
 # --- Live screen preview ---------------------------------------------------
-# ⚠ This streams pictures of your desktop to anyone who can open the remote.
-#    Set SCREEN_VIEW = False to disable it, and set a password if you keep it on.
-SCREEN_VIEW = True
+# Screen capture is opt-in; leave it disabled unless strictly needed.
+SCREEN_VIEW = False
 SCREEN_WIDTH = 760              # preview width in pixels (smaller = faster)
 SCREEN_QUALITY = 55             # JPEG quality 1..95
 SCREEN_REFRESH_MS = 1000        # how often the phone asks for a new frame
@@ -1360,25 +1359,50 @@ def load_web_password():
     return ""
 
 
-def _session_secret():
-    """
-    Long-lived random key kept in .bobo_session_key so that logins survive an
-    app restart. Created once, never shown to the user.
-    """
-    path = os.path.join(BASE_DIR, ".bobo_session_key")
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                key = f.read().strip()
-                if key:
-                    return key
-        key = secrets.token_hex(32)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(key)
-        return key
-    except OSError:
-        return "bobo-fallback-key"
+_session_key_lock = threading.Lock()
+_session_key_cache = None
 
+
+def _session_secret():
+    """Load or create a cryptographically random persistent signing key.
+
+    Fail closed if the key cannot be stored, read or validated. In particular,
+    NEVER replace a missing or unreadable key with a predictable constant.
+    """
+    global _session_key_cache
+    with _session_key_lock:
+        if _session_key_cache is not None:
+            return _session_key_cache
+
+        path = os.path.join(BASE_DIR, ".bobo_session_key")
+        try:
+            with open(path, "r", encoding="ascii") as source:
+                key = source.read().strip()
+        except FileNotFoundError:
+            key = secrets.token_hex(32)
+            try:
+                # Exclusive create avoids overwriting another process's key.
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                with open(path, "r", encoding="ascii") as source:
+                    key = source.read().strip()
+            else:
+                try:
+                    with os.fdopen(fd, "w", encoding="ascii") as dest:
+                        dest.write(key)
+                        dest.flush()
+                        os.fsync(dest.fileno())
+                except OSError:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+                    raise
+
+        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+            raise ValueError("Invalid web session key; refusing to start remote")
+        _session_key_cache = key
+        return key
 
 def session_cookie_value():
     """
@@ -1425,7 +1449,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
     def _authorized(self):
         """Signed in? (cookie only — never a password in the URL)"""
         if not load_web_password():
-            return True                      # no password configured = open
+            return False                     # fail closed without credentials
         from http.cookies import SimpleCookie
         raw = self.headers.get("Cookie")
         if not raw:
@@ -1511,7 +1535,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self.send_header(
                 "Set-Cookie",
                 f"bobo={session_cookie_value()}; Max-Age={WEB_SESSION_DAYS*86400}; "
-                "Path=/; HttpOnly; SameSite=Lax"
+                "Path=/; HttpOnly; SameSite=Strict"
             )
             self.end_headers()
             return self.wfile.write(data)
@@ -1521,7 +1545,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", "11")
             self.send_header("Set-Cookie",
-                             "bobo=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax")
+                             "bobo=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict")
             self.end_headers()
             return self.wfile.write(b'{"ok":true}')
 
@@ -1590,19 +1614,30 @@ def lan_ip():
 
 
 def start_web_server():
-    """Run the remote-control web server on its own daemon thread."""
+    """Start the remote only with valid credentials and a durable secret."""
+    try:
+        password = load_web_password()
+        if len(password) < 12:
+            print("Web remote disabled: set a password of at least 12 characters")
+            print("  in web_password.txt (voice assistant stays available).")
+            return None
+        _session_secret()   # fail closed BEFORE binding a listening socket
+    except (OSError, ValueError) as exc:
+        print(f"Web remote disabled: could not initialize secure session: {exc}")
+        return None
+
     try:
         httpd = ThreadingHTTPServer((WEB_BIND, WEB_PORT), RemoteHandler)
-    except OSError as e:
-        print(f"Web remote could not start on port {WEB_PORT}: {e}")
+    except OSError as exc:
+        print(f"Web remote could not start on port {WEB_PORT}: {exc}")
         return None
+
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    print(f"Web remote ready:  http://{lan_ip()}:{WEB_PORT}/")
-    if load_web_password():
-        print("  Password protected — you'll sign in once per device.")
-    else:
-        print("  WARNING: no password set. Anyone on this network can open it.")
-        print("  Create 'web_password.txt' next to app.py to protect it.")
+    address = "127.0.0.1" if WEB_BIND in ("127.0.0.1", "localhost", "::1") else lan_ip()
+    print(f"Web remote ready:  http://{address}:{WEB_PORT}/")
+    print("  Password required; sessions expire after", WEB_SESSION_DAYS, "day(s).")
+    if WEB_BIND not in ("127.0.0.1", "localhost", "::1"):
+        print("  WARNING: LAN HTTP is unencrypted. Use only on trusted Wi-Fi.")
     return httpd
 
 

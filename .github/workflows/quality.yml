@@ -31,3 +31,16 @@ jobs:
             echo 'Potential secret detected.'
             exit 1
           fi
+
+  windows-native-smoke:
+    name: windows-native-smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile Python sources on Windows
+        run: python -m compileall -q app.py tests
+      - name: Regression tests plus native Win32 smoke
+        run: python -m unittest discover -s tests -p 'test_*.py' -v

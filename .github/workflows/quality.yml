@@ -19,6 +19,8 @@ jobs:
           python-version: '3.11'
       - name: Compile public Python sources
         run: python -m compileall -q app.py debug_listen.py test_hook_debug.py test_mic_levels.py test_wasapi.py test_windows_mic.py
+      - name: Run hotkey regression tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Reject local secrets
         shell: bash
         run: |

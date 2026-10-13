@@ -1975,7 +1975,7 @@ class Listener(threading.Thread):
 
 
 # ===========================================================================
-#  GLOBAL KEY WATCHER: triple-* to wake from anywhere (even lock screen)
+#  GLOBAL KEY WATCHER: Ctrl+Shift+B on the active Windows desktop
 # ===========================================================================
 
 class _KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -1999,66 +1999,72 @@ _LowLevelKeyboardProc = ctypes.WINFUNCTYPE(
 
 class GlobalKeyWatcher(threading.Thread):
     """
-    Watches for Ctrl+Shift+B pressed anywhere — even from the Windows lock /
-    logon screen. When detected it wakes the audio listener and shows the
-    overlay.
+    Detect Ctrl+Shift+B on the active Windows desktop and signal the listener.
 
-    Uses a low-level keyboard hook (WH_KEYBOARD_LL) which works without a
-    window and doesn't need focus. A message pump runs on this thread to
-    keep the hook alive.
+    Low-level hooks require a message loop on their installing thread. They
+    cannot monitor the Windows secure logon/lock desktop.
     """
 
     def __init__(self, gui_queue):
         super().__init__(daemon=True)
         self.gui_queue = gui_queue
-        self._ctrl = False
-        self._shift = False
+        self._b_pressed = False
 
     def _callback(self, nCode, wParam, lParam):
         try:
             if nCode >= 0:
-                struct = ctypes.cast(lParam, ctypes.POINTER(_KBDLLHOOKSTRUCT))
-                vk = struct.contents.vkCode
-                down = wParam in (0x0100, 0x0104)   # WM_KEYDOWN or WM_SYSKEYDOWN
-
-                if vk in (VK_LCONTROL, VK_RCONTROL):
-                    self._ctrl = down
-                elif vk in (VK_LSHIFT, VK_RSHIFT):
-                    self._shift = down
-                elif vk == VK_B and down and self._ctrl and self._shift:
-                    manual_wake.set()
-                    self.gui_queue.put("show")
+                key = ctypes.cast(lParam, ctypes.POINTER(_KBDLLHOOKSTRUCT))
+                if key.contents.vkCode == VK_B:
+                    if wParam in (0x0100, 0x0104):  # WM_KEYDOWN / WM_SYSKEYDOWN
+                        if not self._b_pressed:
+                            self._b_pressed = True
+                            # KBDLLHOOKSTRUCT does not reliably distinguish
+                            # left/right Ctrl or Shift. Query their combined
+                            # state when B is first pressed instead.
+                            user32 = ctypes.windll.user32
+                            ctrl_down = user32.GetAsyncKeyState(0x11) & 0x8000
+                            shift_down = user32.GetAsyncKeyState(0x10) & 0x8000
+                            if ctrl_down and shift_down:
+                                manual_wake.set()
+                                self.gui_queue.put("show")
+                    elif wParam in (0x0101, 0x0105):  # WM_KEYUP / WM_SYSKEYUP
+                        self._b_pressed = False
         except Exception:
+            # An exception must never break the Windows hook chain.
             pass
         return ctypes.windll.user32.CallNextHookEx(None, nCode, wParam, lParam)
 
-def run(self):
-        proc_ref = _LowLevelKeyboardProc(self._callback)
+    def run(self):
         user32 = ctypes.windll.user32
         user32.SetWindowsHookExW.argtypes = [
             ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
         user32.SetWindowsHookExW.restype = ctypes.c_void_p
-        # CallNextHookEx needs correct argtypes for 64-bit lParam
         user32.CallNextHookEx.argtypes = [
             ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p]
         user32.CallNextHookEx.restype = ctypes.c_ssize_t
-        hook = user32.SetWindowsHookExW(
-            13,                                          # WH_KEYBOARD_LL
-            proc_ref,
-            None,                                          # hmod = NULL
-            0,
-        )
+        user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        user32.GetAsyncKeyState.restype = ctypes.c_short
+        user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+        user32.UnhookWindowsHookEx.restype = ctypes.c_int
+
+        # Keep the callback reference alive throughout the message loop.
+        proc_ref = _LowLevelKeyboardProc(self._callback)
+        hook = user32.SetWindowsHookExW(13, proc_ref, None, 0)  # WH_KEYBOARD_LL
         if not hook:
-            print("WARNING: Global hotkey hook failed — Ctrl+Shift+B won't work")
+            print("WARNING: Global hotkey hook failed — Ctrl+Shift+B unavailable")
             return
-        msg = wintypes.MSG()
-        while True:
-            ret = ctypes.windll.user32.GetMessageW(
-                ctypes.byref(msg), None, 0, 0)
-            if ret <= 0:
-                break
-            ctypes.windll.user32.TranslateMessage(msg)
-            ctypes.windll.user32.DispatchMessageW(msg)
+        try:
+            msg = wintypes.MSG()
+            while True:
+                ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret <= 0:
+                    if ret == -1:
+                        print("WARNING: Keyboard hook message loop failed")
+                    break
+                user32.TranslateMessage(msg)
+                user32.DispatchMessageW(msg)
+        finally:
+            user32.UnhookWindowsHookEx(hook)
 
 
 # ===========================================================================
@@ -2114,7 +2120,7 @@ def main():
 
     wake_name = "hey bobo" if WAKE_ENGINE == "vosk" else WAKE_MODEL
     print(f"BOBO is listening. Wake word: \"{wake_name}\"")
-    print(f"Press {WAKE_HOTKEY_LABEL} to wake BOBO from anywhere, even the lock screen")
+    print(f"Press {WAKE_HOTKEY_LABEL} to wake BOBO on the active Windows desktop")
 
     root.after(100, poll_queue, root, overlay, gui_queue)
     try:

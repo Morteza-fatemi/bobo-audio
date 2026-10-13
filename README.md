@@ -40,7 +40,7 @@ Configuration is intentionally kept near the top of `app.py` so a local installa
 
 - `WEB_BIND`: defaults to `127.0.0.1`. Change to `0.0.0.0` **only** if a phone must reach the remote on a trusted private Wi-Fi, with a strong password and a private-only firewall rule.
 - `SCREEN_VIEW`: defaults to `False` because screenshots may reveal private information. Enable only with full understanding of the risk.
-- `WEB_SESSION_DAYS`: defaults to **1 day**, down from 30.
+- `WEB_SESSION_DAYS`: defaults to **1 day**, down from 30; the server verifies the timestamp and signed token on every request (not just browser expiry).
 - `WAKE_ENGINE`: choose the supported wake-word engine.
 
 The `web_password.txt` file is **required** to enable the web remote (or set a 12+ character `WEB_PASSWORD` locally), and must never be committed. Do not set passwords in a public fork. A persistent random `.bobo_session_key` is created with restrictive permissions where supported; if storage fails or the key is malformed, web remote startup is refused rather than signing sessions with a predictable key.
@@ -67,7 +67,7 @@ python -m compileall -q app.py debug_listen.py test_hook_debug.py test_mic_level
 2. Create `web_password.txt` alongside `app.py` with a **unique random password of at least 12 characters**. Store the file locally; do not commit it.
 3. Restart BOBO. On this PC only, open `http://127.0.0.1:49731/`.
 4. Optional phone access: set `WEB_BIND = "0.0.0.0"` only on private Wi-Fi, allow the port only on private Windows Firewall profiles, and keep `SCREEN_VIEW = False` unless required. Do not expose the port to the internet.
-5. To disable remote access again, set `WEB_BIND = "127.0.0.1"` or remove the local password file and restart. Changing the password invalidates existing signed cookies. The offline assistant remains operational.
+5. To disable remote access again, set `WEB_BIND = "127.0.0.1"` or remove the local password file and restart. Changing the password invalidates existing signed cookies. Sessions also expire server-side after their configured lifetime. The offline assistant remains operational.
 
 **Compatibility note:** Existing setups with no password or a password shorter than 12 characters will no longer start the web remote until a strong password is configured. This is intentional to prevent unauthenticated control. Windows hardware and real LAN behavior still require manual validation.
 

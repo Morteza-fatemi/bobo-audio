@@ -61,6 +61,10 @@ Run a local syntax check with:
 python -m compileall -q app.py debug_listen.py test_hook_debug.py test_mic_levels.py test_wasapi.py test_windows_mic.py
 ```
 
+## Versioned source releases
+
+Use [RELEASE_PROCESS.md](RELEASE_PROCESS.md) for tagging SemVer commits and the CI-gated preview workflow. The original `v0.1.0` release is source-only; future tags run fresh checks and are published as prereleases if all gates pass. No Windows installer or production guarantee is implied.
+
 ## Secure remote setup (Windows)
 
 1. Run BOBO normally: offline voice commands are available while the web remote stays disabled without credentials.

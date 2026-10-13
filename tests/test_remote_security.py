@@ -11,6 +11,7 @@ from pathlib import Path
 import secrets
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "app.py"
 def load_security_functions(directory, bind="127.0.0.1", password=""):
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     selected = []
-    names = {"load_web_password", "_session_secret", "session_cookie_value", "start_web_server"}
+    names = {"load_web_password", "_session_secret", "_session_signature", "session_cookie_value", "session_cookie_valid", "start_web_server"}
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in names:
             selected.append(node)
@@ -45,6 +46,7 @@ def load_security_functions(directory, bind="127.0.0.1", password=""):
         "threading": SimpleNamespace(Lock=threading.Lock, Thread=FakeThread),
         "hmac": hmac,
         "hashlib": hashlib,
+        "time": time,
         "WEB_BIND": bind,
         "WEB_PORT": 49731,
         "WEB_PASSWORD": password,
@@ -139,9 +141,45 @@ class RemoteSecurityTests(unittest.TestCase):
     def test_session_cookie_value_changes_with_password(self):
         ns, _ = load_security_functions(self.folder, password="password-number-one")
         a = ns["session_cookie_value"]()
+        self.assertTrue(ns["session_cookie_valid"](a))
         ns["WEB_PASSWORD"] = "password-number-two"
+        self.assertFalse(ns["session_cookie_valid"](a))
         b = ns["session_cookie_value"]()
         self.assertNotEqual(a, b)
+        self.assertTrue(ns["session_cookie_valid"](b))
+
+    def test_expired_cookie_is_rejected_by_server(self):
+        ns, _ = load_security_functions(self.folder, password="strong-password-123")
+        issued = time.time()
+        ns["time"] = SimpleNamespace(time=lambda: issued)
+        cookie = ns["session_cookie_value"]()
+        ns["time"] = SimpleNamespace(time=lambda: issued + 86401)
+        self.assertFalse(ns["session_cookie_valid"](cookie))
+
+    def test_recent_cookie_accepted_before_expiry(self):
+        ns, _ = load_security_functions(self.folder, password="strong-password-123")
+        issued = time.time()
+        ns["time"] = SimpleNamespace(time=lambda: issued)
+        cookie = ns["session_cookie_value"]()
+        ns["time"] = SimpleNamespace(time=lambda: issued + 86300)
+        self.assertTrue(ns["session_cookie_valid"](cookie))
+
+    def test_tampered_cookie_is_rejected(self):
+        ns, _ = load_security_functions(self.folder, password="strong-password-123")
+        cookie = ns["session_cookie_value"]()
+        parts = cookie.split(".")
+        parts[-1] = "0" * 64
+        self.assertFalse(ns["session_cookie_valid"](".".join(parts)))
+        self.assertFalse(ns["session_cookie_valid"]("garbage"))
+        self.assertFalse(ns["session_cookie_valid"](None))
+
+    def test_far_future_cookie_is_rejected(self):
+        ns, _ = load_security_functions(self.folder, password="strong-password-123")
+        now = time.time()
+        ns["time"] = SimpleNamespace(time=lambda: now + 300)
+        cookie = ns["session_cookie_value"]()
+        ns["time"] = SimpleNamespace(time=lambda: now)
+        self.assertFalse(ns["session_cookie_valid"](cookie))
 
     def test_cannot_authorize_when_no_password(self):
         tree = ast.parse(SOURCE.read_text(encoding="utf-8"))

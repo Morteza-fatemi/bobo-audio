@@ -1404,15 +1404,43 @@ def _session_secret():
         _session_key_cache = key
         return key
 
+def _session_signature(issued, nonce, password):
+    """HMAC over the issue timestamp, random nonce and current password."""
+    payload = f"bobo-remote:{issued}:{nonce}:{password}".encode("utf-8")
+    return hmac.new(_session_secret().encode("ascii"), payload, hashlib.sha256).hexdigest()
+
+
 def session_cookie_value():
-    """
-    The value a signed-in browser must present. It is derived from the secret
-    and the password, so changing the password signs everyone out.
-    """
+    """Create a random, signed session with verifiable server-side expiry."""
     password = load_web_password()
-    return hmac.new(_session_secret().encode(),
-                    ("bobo-remote:" + password).encode(),
-                    hashlib.sha256).hexdigest()
+    if len(password) < 12:
+        raise ValueError("Web remote is disabled without a strong password")
+    issued = str(int(time.time()))
+    nonce = secrets.token_hex(16)
+    return f"{issued}.{nonce}.{_session_signature(issued, nonce, password)}"
+
+
+def session_cookie_valid(cookie):
+    """Check HMAC, timestamp and expiration for every authorized request."""
+    try:
+        password = load_web_password()
+        if len(password) < 12 or not isinstance(cookie, str):
+            return False
+        issued, nonce, signature = cookie.split(".")
+        if not issued.isdecimal() or len(nonce) != 32:
+            return False
+        if any(ch not in "0123456789abcdef" for ch in nonce):
+            return False
+        if len(signature) != 64:
+            return False
+        age = time.time() - int(issued)
+        if age < -60 or age > WEB_SESSION_DAYS * 86400:
+            return False
+        expected = _session_signature(issued, nonce, password)
+        return hmac.compare_digest(signature, expected)
+    except (ValueError, TypeError, OSError):
+        # If the signing secret is unavailable, deny access.
+        return False
 
 
 # Simple brute-force brake: (failures, blocked_until) per client IP.
@@ -1458,8 +1486,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             got = SimpleCookie(raw).get("bobo")
         except Exception:
             return False
-        return bool(got) and hmac.compare_digest(got.value,
-                                                 session_cookie_value())
+        return bool(got) and session_cookie_valid(got.value)
 
     def _send(self, code, body, ctype="application/json; charset=utf-8"):
         self._send_bytes(code, body.encode("utf-8"), ctype)
